@@ -135,10 +135,6 @@ if submit_button:
                 
                 # Procesamos los resultados obtenidos
                 for tweet in results['tweets']:
-                    # Filtramos por lenguaje aquí, ya que la librería no lo soporta nativamente
-                    # (Esta es una aproximación, no todos los tweets tienen campo de lenguaje)
-                    # if tweet.get('language') == 'es':
-                    
                     # Convertimos la fecha de string a objeto datetime
                     tweet_date = datetime.strptime(tweet['date'], '%b %d, %Y · %I:%M %p UTC')
                     
@@ -196,7 +192,7 @@ if submit_button:
                     if negative_text:
                         create_wordcloud(negative_text, "Tweets Negativos")
                     else:
-                        st.write("No hay suficientes tweets negativos para generar una nube de palabras.")
+                        st.write("No hay suficientes tweets positivos para generar una nube de palabras.")
                 
                 # --- Muestra de Tweets ---
                 st.header("Muestra de Tweets Analizados")
@@ -204,5 +200,16 @@ if submit_button:
 
         except Exception as e:
             st.error(f"Ocurrió un error durante la recopilación o el análisis de datos: {e}")
-            st.warning("La plataforma X (Twitter) cambia frecuentemente sus sistemas. Si el problema persiste, la herramienta puede requerir mantenimiento.")
-
+            # --- CAMBIO: Añadimos un mensaje de ayuda específico para el error común ---
+            if "empty sequence" in str(e).lower():
+                st.warning(
+                    "**Explicación:** Este error específico usualmente significa que la librería de scraping (`ntscraper`) "
+                    "no pudo encontrar un servidor público de Nitter que funcione en este momento. "
+                    "Esto es algo temporal y fuera del control de la aplicación."
+                )
+                st.info("**¿Qué puedes hacer?** Por favor, espera unos minutos y vuelve a intentarlo.")
+            else:
+                st.warning(
+                    "La plataforma X (Twitter) cambia frecuentemente sus sistemas. "
+                    "Si el problema persiste, la herramienta puede requerir mantenimiento."
+                )
