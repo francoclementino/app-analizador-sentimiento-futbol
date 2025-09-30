@@ -124,8 +124,8 @@ if submit_button:
         try:
             # --- CAMBIO: Lógica de scraping actualizada ---
             with st.spinner(f"Recopilando hasta {max_tweets} tweets... Este proceso puede tardar unos minutos."):
-                # --- CAMBIO: Hacemos el scraper más "paciente" aumentando el timeout ---
-                scraper = Nitter(timeout=20)
+                # --- CORRECCIÓN: Eliminamos el parámetro 'timeout' que causaba el error ---
+                scraper = Nitter()
                 # La nueva librería busca en un único llamado
                 results = scraper.get_tweets(
                     terms=search_terms,
