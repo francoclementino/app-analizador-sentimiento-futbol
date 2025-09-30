@@ -26,10 +26,9 @@ async def initialize_twitter_accounts():
         username = st.secrets["twitter"]["username"]
         password = st.secrets["twitter"]["password"]
         email = st.secrets["twitter"]["email"]
-        email_password = st.secrets["twitter"]["email_password"]
         
-        # Agregar cuenta
-        await api.pool.add_account(username, password, email, email_password)
+        # OPCIÓN 1: Sin email_password (puede fallar si Twitter pide verificación)
+        await api.pool.add_account(username, password, email, "")
         
         # Hacer login
         await api.pool.login_all()
@@ -41,6 +40,7 @@ async def initialize_twitter_accounts():
         return None
     except Exception as e:
         st.error(f"Error configurando cuentas de Twitter: {e}")
+        st.info("Si Twitter solicita verificación por email, necesitarás agregar 'email_password' en los secretos.")
         return None
 
 @st.cache_resource
