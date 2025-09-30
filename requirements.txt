@@ -1,6 +1,6 @@
 streamlit
 pandas
-snscrape-cli
 pysentimiento
 wordcloud
 matplotlib
+snscrape @ git+https://github.com/JustAnotherArchivist/snscrape.git@develop
