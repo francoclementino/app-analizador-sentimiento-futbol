@@ -14,12 +14,19 @@ st.set_page_config(layout="wide", page_title="Análisis de Sentimiento de Futbol
 # --- FUNCIÓN PARA INICIALIZAR CUENTAS DE TWITTER ---
 async def initialize_twitter_accounts():
     """Inicializa las cuentas de Twitter desde los secretos de Streamlit."""
-    api = API()
+    import os
+    
+    # Crear directorio para la base de datos si no existe
+    db_path = "/tmp/accounts.db"
+    api = API(db_path)
     
     # Verificar si ya hay cuentas configuradas
-    accounts = await api.pool.accounts_info()
-    if len(accounts) > 0:
-        return api  # Ya están configuradas
+    try:
+        accounts = await api.pool.accounts_info()
+        if len(accounts) > 0:
+            return api  # Ya están configuradas
+    except:
+        pass  # Primera vez, continuar con la configuración
     
     # Configurar desde secrets
     try:
@@ -27,20 +34,22 @@ async def initialize_twitter_accounts():
         password = st.secrets["twitter"]["password"]
         email = st.secrets["twitter"]["email"]
         
-        # OPCIÓN 1: Sin email_password (puede fallar si Twitter pide verificación)
+        # Agregar cuenta (sin email_password)
         await api.pool.add_account(username, password, email, "")
         
         # Hacer login
         await api.pool.login_all()
         
+        st.success("✅ Cuenta de Twitter configurada correctamente")
         return api
-    except KeyError:
-        st.error("⚠️ No se encontraron las credenciales de Twitter en los secretos.")
-        st.info("Por favor, configura los secretos en Streamlit Cloud: Settings > Secrets")
+        
+    except KeyError as e:
+        st.error(f"⚠️ Falta configurar: {e}")
+        st.info("Verifica que hayas configurado username, password y email en Settings > Secrets")
         return None
     except Exception as e:
-        st.error(f"Error configurando cuentas de Twitter: {e}")
-        st.info("Si Twitter solicita verificación por email, necesitarás agregar 'email_password' en los secretos.")
+        st.error(f"❌ Error al configurar Twitter: {str(e)}")
+        st.info("Posibles causas:\n- Credenciales incorrectas\n- Twitter bloqueó el login\n- Se requiere verificación por email")
         return None
 
 @st.cache_resource
