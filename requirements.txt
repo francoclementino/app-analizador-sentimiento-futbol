@@ -1,0 +1,6 @@
+streamlit
+pandas
+snscrape-cli
+pysentimiento
+wordcloud
+matplotlib
