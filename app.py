@@ -1,12 +1,11 @@
 import streamlit as st
 import pandas as pd
-import snscrape.modules.twitter as sntwitter
+from ntscraper import Nitter # <-- CAMBIO: Importamos la nueva librería
 from pysentimiento import create_analyzer
 from wordcloud import WordCloud
 import matplotlib.pyplot as plt
-from collections import Counter
 import re
-from datetime import date, timedelta
+from datetime import date, timedelta, datetime
 
 # --- Configuración de la Página y Analizador de Sentimiento ---
 
@@ -45,7 +44,6 @@ def get_sentiment_label(prediction):
 
 def create_wordcloud(text, title):
     """Genera y muestra una nube de palabras."""
-    # Lista de stopwords en español. Se pueden añadir más palabras específicas del fútbol si es necesario.
     stopwords_es = set([
         'de', 'la', 'que', 'el', 'en', 'y', 'a', 'los', 'del', 'se', 'no', 'con', 'un', 'una', 'su',
         'para', 'es', 'por', 'lo', 'las', 'como', 'más', 'pero', 'sus', 'le', 'al', 'si', 'ya',
@@ -67,30 +65,21 @@ def create_wordcloud(text, title):
     ax.set_axis_off()
     st.pyplot(fig)
 
-def build_search_query(player_name, team_name, start_date, end_date):
-    """Construye una consulta de búsqueda optimizada para Twitter."""
-    query_parts = []
-    # Divide el nombre del jugador para búsquedas más específicas
+def build_search_terms(player_name, team_name):
+    """Construye una lista de términos de búsqueda para la nueva librería."""
+    terms = []
     name_parts = player_name.strip().split()
     first_name = name_parts[0] if name_parts else ""
     last_name = name_parts[-1] if len(name_parts) > 1 else ""
 
-    # 1. Búsqueda del nombre completo
     if player_name:
-        query_parts.append(f'"{player_name}"')
-    
-    # 2. Búsqueda de nombre/apellido y equipo (si ambos existen)
-    if team_name and first_name:
-        query_parts.append(f'("{first_name}" AND "{team_name}")')
-    if team_name and last_name and first_name != last_name:
-        query_parts.append(f'("{last_name}" AND "{team_name}")')
-        
-    # Combina todas las partes con OR
-    full_query = " OR ".join(query_parts)
-    
-    # Añade filtro de fecha y lenguaje
-    full_query += f" since:{start_date} until:{end_date} lang:es"
-    return full_query
+        terms.append(f'"{player_name}"')
+    if team_name:
+        if first_name:
+            terms.append(f'"{first_name}" "{team_name}"')
+        if last_name and first_name != last_name:
+            terms.append(f'"{last_name}" "{team_name}"')
+    return terms
 
 # --- Interfaz de Usuario (Streamlit) ---
 
@@ -107,7 +96,6 @@ with st.form("analysis_form"):
         player_name = st.text_input("Nombre del Jugador", "Ever Banega", help="Introduce el nombre completo para mejores resultados.")
         team_name = st.text_input("Equipo (Opcional)", "Newells Old Boys", help="Añadir el equipo ayuda a dar contexto y filtrar resultados irrelevantes.")
     with col2:
-        # Por defecto, el rango de fechas es la última semana.
         today = date.today()
         default_start_date = today - timedelta(days=7)
         date_range = st.date_input(
@@ -116,10 +104,9 @@ with st.form("analysis_form"):
             max_value=today,
             help="Selecciona el período para buscar los tweets."
         )
-        max_tweets = st.number_input("Cantidad Máxima de Tweets", min_value=50, max_value=2000, value=200, step=50, help="Número de tweets a recopilar y analizar. Un número mayor tomará más tiempo.")
+        max_tweets = st.number_input("Cantidad Máxima de Tweets", min_value=50, max_value=500, value=100, step=50, help="Número de tweets a recopilar. Un número mayor tomará más tiempo. Límite: 500.")
 
     submit_button = st.form_submit_button("📊 Iniciar Análisis")
-
 
 # --- Lógica de Análisis y Visualización ---
 
@@ -129,25 +116,40 @@ if submit_button:
     else:
         start_date, end_date = date_range
         
-        # Construye la consulta de búsqueda
-        query = build_search_query(player_name, team_name, start_date, end_date)
-        
-        st.info(f"Buscando tweets con la consulta: `{query}`")
+        search_terms = build_search_terms(player_name, team_name)
+        st.info(f"Buscando tweets con los términos: `{', '.join(search_terms)}`")
         
         tweets_list = []
-        progress_bar = st.progress(0)
-        status_text = st.empty()
-
+        
         try:
+            # --- CAMBIO: Lógica de scraping actualizada ---
             with st.spinner(f"Recopilando hasta {max_tweets} tweets... Este proceso puede tardar unos minutos."):
-                # Usa snscrape para obtener los tweets
-                scraper = sntwitter.TwitterSearchScraper(query)
-                for i, tweet in enumerate(scraper.get_items()):
-                    if i >= max_tweets:
-                        break
-                    tweets_list.append([tweet.date, tweet.id, tweet.rawContent, tweet.user.username, tweet.url])
-                    progress_bar.progress((i + 1) / max_tweets)
+                scraper = Nitter()
+                # La nueva librería busca en un único llamado
+                results = scraper.get_tweets(
+                    terms=search_terms,
+                    since=start_date.strftime('%Y-%m-%d'),
+                    until=end_date.strftime('%Y-%m-%d'),
+                    number=max_tweets
+                )
                 
+                # Procesamos los resultados obtenidos
+                for tweet in results['tweets']:
+                    # Filtramos por lenguaje aquí, ya que la librería no lo soporta nativamente
+                    # (Esta es una aproximación, no todos los tweets tienen campo de lenguaje)
+                    # if tweet.get('language') == 'es':
+                    
+                    # Convertimos la fecha de string a objeto datetime
+                    tweet_date = datetime.strptime(tweet['date'], '%b %d, %Y · %I:%M %p UTC')
+                    
+                    tweets_list.append([
+                        tweet_date, 
+                        tweet['link'].split('/')[-1], # Obtenemos el ID del link
+                        tweet['text'], 
+                        tweet['user']['username'], 
+                        tweet['link']
+                    ])
+            
             if not tweets_list:
                 st.warning("No se encontraron tweets para los criterios de búsqueda seleccionados. Intenta con un rango de fechas más amplio o un jugador diferente.")
             else:
@@ -157,8 +159,6 @@ if submit_button:
                 # --- Análisis de Sentimiento ---
                 with st.spinner("Analizando el sentimiento de los tweets..."):
                     tweets_df['Clean Text'] = tweets_df['Text'].apply(clean_text)
-                    
-                    # Realiza la predicción de sentimiento en el lote de textos limpios
                     sentiments = sentiment_analyzer.predict(tweets_df['Clean Text'].tolist())
                     tweets_df['Sentiment'] = [get_sentiment_label(s) for s in sentiments]
 
@@ -172,10 +172,9 @@ if submit_button:
                 col2.metric("Tweets Negativos", sentiment_counts.get("Negativo", 0))
                 col3.metric("Tweets Neutrales", sentiment_counts.get("Neutral", 0))
                 
-                # Gráfico de Torta
                 fig, ax = plt.subplots()
                 sentiment_counts.plot(kind='pie', autopct='%1.1f%%', ax=ax, colors=['#4CAF50', '#F44336', '#FFC107'])
-                ax.set_ylabel('') # Oculta la etiqueta del eje y
+                ax.set_ylabel('')
                 ax.set_title("Distribución de Sentimiento")
                 st.pyplot(fig)
                 
@@ -201,10 +200,9 @@ if submit_button:
                 
                 # --- Muestra de Tweets ---
                 st.header("Muestra de Tweets Analizados")
-                
-                st.subheader("💬 Tweets Más Relevantes")
                 st.dataframe(tweets_df[['Username', 'Text', 'Sentiment', 'URL']], use_container_width=True)
 
         except Exception as e:
-            st.error(f"Ocurrió un error durante la recopilación de datos: {e}")
-            st.warning("La plataforma X (Twitter) cambia frecuentemente sus sistemas, lo que puede causar fallos temporales en las herramientas de scraping. Por favor, inténtalo de nuevo más tarde.")
+            st.error(f"Ocurrió un error durante la recopilación o el análisis de datos: {e}")
+            st.warning("La plataforma X (Twitter) cambia frecuentemente sus sistemas. Si el problema persiste, la herramienta puede requerir mantenimiento.")
+
