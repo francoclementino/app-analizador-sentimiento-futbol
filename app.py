@@ -4,36 +4,44 @@ from pysentimiento import create_analyzer
 from wordcloud import WordCloud
 import matplotlib.pyplot as plt
 import re
-from datetime import date, timedelta, datetime
+from datetime import date, timedelta
+import asyncio
+from twscrape import API, gather
 
-# --- Detección de Incompatibilidad de la Librería de Scraping ---
-# Este es el punto crítico. Intentamos importar la librería y, si falla
-# con el error conocido, detenemos la app y mostramos una explicación.
-
-try:
-    import snscrape.modules.twitter as sntwitter
-except AttributeError:
-    st.set_page_config(layout="wide", page_title="Error de Compatibilidad")
-    st.title("⚽ Analizador de Sentimiento de Futbolistas")
-    st.error(
-        "**Error Crítico de Compatibilidad Detectado**\n\n"
-        "La librería de web scraping (`snscrape`) no es compatible con el entorno del servidor "
-        "en el que se ejecuta esta aplicación (versión de Python demasiado moderna).\n\n"
-        "**Este es un hallazgo clave de la prueba de concepto:** Confirma que depender de "
-        "librerías de scraping gratuitas y no mantenidas activamente presenta un riesgo técnico "
-        "importante, tal como se predijo en el informe de viabilidad inicial."
-    )
-    st.warning(
-        "**Conclusión de la Prueba:** Para que un proyecto como este sea viable a largo plazo, "
-        "se requeriría invertir en el desarrollo de una herramienta de scraping personalizada y con "
-        "mantenimiento continuo, o encontrar una solución de datos comercial."
-    )
-    # Detenemos la ejecución de la aplicación aquí.
-    st.stop()
-
-# --- El resto de la aplicación (solo se ejecuta si la importación tuvo éxito) ---
-
+# Configuración de la página
 st.set_page_config(layout="wide", page_title="Análisis de Sentimiento de Futbolistas")
+
+# --- FUNCIÓN PARA INICIALIZAR CUENTAS DE TWITTER ---
+async def initialize_twitter_accounts():
+    """Inicializa las cuentas de Twitter desde los secretos de Streamlit."""
+    api = API()
+    
+    # Verificar si ya hay cuentas configuradas
+    accounts = await api.pool.accounts_info()
+    if len(accounts) > 0:
+        return api  # Ya están configuradas
+    
+    # Configurar desde secrets
+    try:
+        username = st.secrets["twitter"]["username"]
+        password = st.secrets["twitter"]["password"]
+        email = st.secrets["twitter"]["email"]
+        email_password = st.secrets["twitter"]["email_password"]
+        
+        # Agregar cuenta
+        await api.pool.add_account(username, password, email, email_password)
+        
+        # Hacer login
+        await api.pool.login_all()
+        
+        return api
+    except KeyError:
+        st.error("⚠️ No se encontraron las credenciales de Twitter en los secretos.")
+        st.info("Por favor, configura los secretos en Streamlit Cloud: Settings > Secrets")
+        return None
+    except Exception as e:
+        st.error(f"Error configurando cuentas de Twitter: {e}")
+        return None
 
 @st.cache_resource
 def load_sentiment_analyzer():
@@ -86,28 +94,45 @@ def create_wordcloud(text, title):
     ax.set_axis_off()
     st.pyplot(fig)
 
-def build_snscrape_query(player_name, team_name, start_date, end_date):
-    """Construye la cadena de búsqueda para snscrape."""
-    terms = []
-    name_parts = player_name.strip().split()
+async def scrape_tweets_async(player_name, team_name, start_date, end_date, max_tweets):
+    """Función asíncrona para scrapear tweets usando twscrape."""
+    # Inicializar API con cuentas
+    api = await initialize_twitter_accounts()
+    if api is None:
+        return []
     
-    if player_name:
-        terms.append(f'"{player_name}"')
-    if team_name and len(name_parts) > 0:
-        terms.append(f'("{name_parts[0]}" AND "{team_name}")')
-        if len(name_parts) > 1:
-            terms.append(f'("{name_parts[-1]}" AND "{team_name}")')
+    # Construir query de búsqueda
+    query_parts = [f'"{player_name}"']
+    if team_name:
+        query_parts.append(f'"{team_name}"')
+    
+    query = f'{" ".join(query_parts)} since:{start_date.strftime("%Y-%m-%d")} until:{end_date.strftime("%Y-%m-%d")}'
+    
+    tweets_list = []
+    try:
+        async for tweet in api.search(query, limit=max_tweets):
+            tweets_list.append({
+                'Datetime': tweet.date,
+                'Tweet Id': tweet.id,
+                'Text': tweet.rawContent,
+                'Username': tweet.user.username,
+                'URL': tweet.url
+            })
+    except Exception as e:
+        st.error(f"Error durante el scraping: {e}")
+    
+    return tweets_list
 
-    query_terms = " OR ".join(terms)
-    query = f"({query_terms}) since:{start_date.strftime('%Y-%m-%d')} until:{end_date.strftime('%Y-%m-%d')}"
-    return query
+def scrape_tweets(player_name, team_name, start_date, end_date, max_tweets):
+    """Wrapper sincrónico para usar en Streamlit."""
+    return asyncio.run(scrape_tweets_async(player_name, team_name, start_date, end_date, max_tweets))
 
 # --- Interfaz de Usuario (Streamlit) ---
 
 st.title("⚽ Analizador de Sentimiento de Futbolistas en X (Twitter)")
 st.markdown("""
-Esta herramienta es una prueba de concepto basada en el informe de viabilidad. 
-Permite realizar un análisis de sentimiento bajo demanda utilizando **web scraping directo (sin costo de API)** y un **modelo de PLN pre-entrenado para español**.
+Esta herramienta utiliza **twscrape** (2025), una librería activamente mantenida que permite 
+realizar análisis de sentimiento en tiempo real de tweets sobre futbolistas.
 """)
 
 with st.form("analysis_form"):
@@ -132,29 +157,16 @@ if submit_button:
     else:
         start_date, end_date = date_range
         
-        query = build_snscrape_query(player_name, team_name, start_date, end_date)
-        st.info(f"Buscando tweets con la consulta: `{query}`")
-        
-        tweets_list = []
+        st.info(f"🔍 Buscando tweets sobre **{player_name}** {f'({team_name})' if team_name else ''}")
         
         try:
-            with st.spinner(f"Recopilando hasta {max_tweets} tweets... Este proceso puede ser más lento y depende de la disponibilidad de X."):
-                scraper = sntwitter.TwitterSearchScraper(query)
-                for i, tweet in enumerate(scraper.get_items()):
-                    if i >= max_tweets:
-                        break
-                    tweets_list.append([
-                        tweet.date, 
-                        tweet.id, 
-                        tweet.rawContent, 
-                        tweet.user.username, 
-                        tweet.url
-                    ])
+            with st.spinner(f"Recopilando hasta {max_tweets} tweets... Este proceso puede tardar un momento."):
+                tweets_list = scrape_tweets(player_name, team_name, start_date, end_date, max_tweets)
             
             if not tweets_list:
                 st.warning("No se encontraron tweets para los criterios de búsqueda seleccionados. Intenta con un rango de fechas más amplio o un jugador diferente.")
             else:
-                tweets_df = pd.DataFrame(tweets_list, columns=['Datetime', 'Tweet Id', 'Text', 'Username', 'URL'])
+                tweets_df = pd.DataFrame(tweets_list)
                 st.success(f"¡Recopilación completada! Se encontraron {len(tweets_df)} tweets.")
 
                 with st.spinner("Analizando el sentimiento de los tweets..."):
@@ -180,22 +192,29 @@ if submit_button:
                 with col_wc1:
                     st.subheader("Palabras en Tweets Positivos")
                     positive_text = " ".join(tweet for tweet in tweets_df[tweets_df['Sentiment'] == 'Positivo']['Clean Text'])
-                    if positive_text: create_wordcloud(positive_text, "Tweets Positivos")
-                    else: st.write("No hay suficientes datos.")
+                    if positive_text: 
+                        create_wordcloud(positive_text, "Tweets Positivos")
+                    else: 
+                        st.write("No hay suficientes datos.")
+                        
                 with col_wc2:
                     st.subheader("Palabras en Tweets Negativos")
                     negative_text = " ".join(tweet for tweet in tweets_df[tweets_df['Sentiment'] == 'Negativo']['Clean Text'])
-                    if negative_text: create_wordcloud(negative_text, "Tweets Negativos")
-                    else: st.write("No hay suficientes datos.")
+                    if negative_text: 
+                        create_wordcloud(negative_text, "Tweets Negativos")
+                    else: 
+                        st.write("No hay suficientes datos.")
                 
                 st.header("Muestra de Tweets Analizados")
                 st.dataframe(tweets_df[['Username', 'Text', 'Sentiment', 'URL']], use_container_width=True)
 
         except Exception as e:
             st.error(f"Ocurrió un error durante la recopilación de datos: {e}")
-            st.warning(
-                "El scraping directo de X (Twitter) es inestable porque la plataforma implementa activamente medidas anti-bots. "
-                "Si este error persiste, puede que X haya bloqueado temporalmente el acceso desde el servidor de la aplicación. "
-                "Por favor, inténtalo de nuevo más tarde."
-            )
-
+            st.warning("""
+            **Posibles causas:**
+            - Las credenciales de Twitter no están configuradas correctamente en Streamlit Cloud
+            - La cuenta alcanzó el límite de rate (espera 15 minutos)
+            - Problemas de conexión con Twitter
+            
+            **Solución:** Verifica que hayas configurado los secretos correctamente en Settings > Secrets
+            """)

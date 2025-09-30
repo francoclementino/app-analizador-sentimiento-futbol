@@ -3,4 +3,4 @@ pandas
 pysentimiento
 wordcloud
 matplotlib
-snscrape @ git+https://github.com/JustAnotherArchivist/snscrape.git@master
+twscrape
