@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
-from ntscraper import Nitter # <-- CAMBIO: Importamos la nueva librería
+# --- CAMBIO: Volvemos a snscrape, la librería de scraping directo ---
+import snscrape.modules.twitter as sntwitter
 from pysentimiento import create_analyzer
 from wordcloud import WordCloud
 import matplotlib.pyplot as plt
@@ -9,11 +10,8 @@ from datetime import date, timedelta, datetime
 
 # --- Configuración de la Página y Analizador de Sentimiento ---
 
-# Configura el layout de la página para que sea más ancho.
 st.set_page_config(layout="wide", page_title="Análisis de Sentimiento de Futbolistas")
 
-# Inicializa el analizador de sentimiento para español.
-# Se utiliza 'st.cache_resource' para que el modelo se cargue una sola vez.
 @st.cache_resource
 def load_sentiment_analyzer():
     """Carga y cachea el modelo de análisis de sentimiento."""
@@ -25,11 +23,11 @@ sentiment_analyzer = load_sentiment_analyzer()
 
 def clean_text(text):
     """Limpia el texto de los tweets para el análisis y la nube de palabras."""
-    text = re.sub(r"http\S+", "", text)  # Elimina URLs
-    text = re.sub(r"@[A-za-z0-9]+", "", text)  # Elimina menciones
-    text = re.sub(r"#[A-za-z0-9]+", "", text)  # Elimina hashtags
-    text = re.sub(r"\n", " ", text)  # Elimina saltos de línea
-    text = re.sub(r"\s+", " ", text).strip()  # Elimina espacios extra
+    text = re.sub(r"http\S+", "", text)
+    text = re.sub(r"@[A-Za-z0-9]+", "", text)
+    text = re.sub(r"#[A-Za-z0-9]+", "", text)
+    text = re.sub(r"\n", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
     return text.lower()
 
 def get_sentiment_label(prediction):
@@ -65,28 +63,33 @@ def create_wordcloud(text, title):
     ax.set_axis_off()
     st.pyplot(fig)
 
-def build_search_terms(player_name, team_name):
-    """Construye una lista de términos de búsqueda para la nueva librería."""
+# --- CAMBIO: La función para construir la query es ahora más compleja ---
+def build_snscrape_query(player_name, team_name, start_date, end_date):
+    """Construye la cadena de búsqueda para snscrape."""
     terms = []
     name_parts = player_name.strip().split()
-    first_name = name_parts[0] if name_parts else ""
-    last_name = name_parts[-1] if len(name_parts) > 1 else ""
-
+    
+    # Crea combinaciones del nombre y el equipo
     if player_name:
         terms.append(f'"{player_name}"')
-    if team_name:
-        if first_name:
-            terms.append(f'"{first_name}" "{team_name}"')
-        if last_name and first_name != last_name:
-            terms.append(f'"{last_name}" "{team_name}"')
-    return terms
+    if team_name and len(name_parts) > 0:
+        terms.append(f'("{name_parts[0]}" AND "{team_name}")')
+        if len(name_parts) > 1:
+            terms.append(f'("{name_parts[-1]}" AND "{team_name}")')
+
+    # Une los términos con OR para que busque cualquiera de las combinaciones
+    query_terms = " OR ".join(terms)
+    
+    # Añade el rango de fechas
+    query = f"({query_terms}) since:{start_date.strftime('%Y-%m-%d')} until:{end_date.strftime('%Y-%m-%d')}"
+    return query
 
 # --- Interfaz de Usuario (Streamlit) ---
 
 st.title("⚽ Analizador de Sentimiento de Futbolistas en X (Twitter)")
 st.markdown("""
 Esta herramienta es una prueba de concepto basada en el informe de viabilidad. 
-Permite realizar un análisis de sentimiento bajo demanda utilizando **web scraping (sin costo de API)** y un **modelo de PLN pre-entrenado para español**.
+Permite realizar un análisis de sentimiento bajo demanda utilizando **web scraping directo (sin costo de API)** y un **modelo de PLN pre-entrenado para español**.
 """)
 
 with st.form("analysis_form"):
@@ -98,13 +101,8 @@ with st.form("analysis_form"):
     with col2:
         today = date.today()
         default_start_date = today - timedelta(days=7)
-        date_range = st.date_input(
-            "Rango de Fechas",
-            (default_start_date, today),
-            max_value=today,
-            help="Selecciona el período para buscar los tweets."
-        )
-        max_tweets = st.number_input("Cantidad Máxima de Tweets", min_value=50, max_value=500, value=100, step=50, help="Número de tweets a recopilar. Un número mayor tomará más tiempo. Límite: 500.")
+        date_range = st.date_input("Rango de Fechas", (default_start_date, today), max_value=today)
+        max_tweets = st.number_input("Cantidad Máxima de Tweets", min_value=50, max_value=500, value=100, step=50)
 
     submit_button = st.form_submit_button("📊 Iniciar Análisis")
 
@@ -116,35 +114,24 @@ if submit_button:
     else:
         start_date, end_date = date_range
         
-        search_terms = build_search_terms(player_name, team_name)
-        st.info(f"Buscando tweets con los términos: `{', '.join(search_terms)}`")
+        query = build_snscrape_query(player_name, team_name, start_date, end_date)
+        st.info(f"Buscando tweets con la consulta: `{query}`")
         
         tweets_list = []
         
         try:
-            # --- CAMBIO: Lógica de scraping actualizada ---
-            with st.spinner(f"Recopilando hasta {max_tweets} tweets... Este proceso puede tardar unos minutos."):
-                # --- CORRECCIÓN: Eliminamos el parámetro 'timeout' que causaba el error ---
-                scraper = Nitter()
-                # La nueva librería busca en un único llamado
-                results = scraper.get_tweets(
-                    terms=search_terms,
-                    since=start_date.strftime('%Y-%m-%d'),
-                    until=end_date.strftime('%Y-%m-%d'),
-                    number=max_tweets
-                )
-                
-                # Procesamos los resultados obtenidos
-                for tweet in results['tweets']:
-                    # Convertimos la fecha de string a objeto datetime
-                    tweet_date = datetime.strptime(tweet['date'], '%b %d, %Y · %I:%M %p UTC')
-                    
+            with st.spinner(f"Recopilando hasta {max_tweets} tweets... Este proceso puede ser más lento y depende de la disponibilidad de X."):
+                # --- CAMBIO: Nueva lógica de scraping con snscrape ---
+                scraper = sntwitter.TwitterSearchScraper(query)
+                for i, tweet in enumerate(scraper.get_items()):
+                    if i >= max_tweets:
+                        break
                     tweets_list.append([
-                        tweet_date, 
-                        tweet['link'].split('/')[-1], # Obtenemos el ID del link
-                        tweet['text'], 
-                        tweet['user']['username'], 
-                        tweet['link']
+                        tweet.date, 
+                        tweet.id, 
+                        tweet.rawContent, 
+                        tweet.user.username, 
+                        tweet.url
                     ])
             
             if not tweets_list:
@@ -153,15 +140,13 @@ if submit_button:
                 tweets_df = pd.DataFrame(tweets_list, columns=['Datetime', 'Tweet Id', 'Text', 'Username', 'URL'])
                 st.success(f"¡Recopilación completada! Se encontraron {len(tweets_df)} tweets.")
 
-                # --- Análisis de Sentimiento ---
+                # El resto del código de análisis y visualización permanece igual
                 with st.spinner("Analizando el sentimiento de los tweets..."):
                     tweets_df['Clean Text'] = tweets_df['Text'].apply(clean_text)
                     sentiments = sentiment_analyzer.predict(tweets_df['Clean Text'].tolist())
                     tweets_df['Sentiment'] = [get_sentiment_label(s) for s in sentiments]
 
-                # --- Visualización de Resultados ---
                 st.header("Resultados del Análisis de Sentimiento")
-                
                 sentiment_counts = tweets_df['Sentiment'].value_counts()
                 
                 col1, col2, col3 = st.columns(3)
@@ -172,46 +157,29 @@ if submit_button:
                 fig, ax = plt.subplots()
                 sentiment_counts.plot(kind='pie', autopct='%1.1f%%', ax=ax, colors=['#4CAF50', '#F44336', '#FFC107'])
                 ax.set_ylabel('')
-                ax.set_title("Distribución de Sentimiento")
                 st.pyplot(fig)
                 
-                # --- Nubes de Palabras ---
                 st.header("Temas Frecuentes")
-                
                 col_wc1, col_wc2 = st.columns(2)
                 with col_wc1:
                     st.subheader("Palabras en Tweets Positivos")
                     positive_text = " ".join(tweet for tweet in tweets_df[tweets_df['Sentiment'] == 'Positivo']['Clean Text'])
-                    if positive_text:
-                        create_wordcloud(positive_text, "Tweets Positivos")
-                    else:
-                        st.write("No hay suficientes tweets positivos para generar una nube de palabras.")
-
+                    if positive_text: create_wordcloud(positive_text, "Tweets Positivos")
+                    else: st.write("No hay suficientes datos.")
                 with col_wc2:
                     st.subheader("Palabras en Tweets Negativos")
                     negative_text = " ".join(tweet for tweet in tweets_df[tweets_df['Sentiment'] == 'Negativo']['Clean Text'])
-                    if negative_text:
-                        create_wordcloud(negative_text, "Tweets Negativos")
-                    else:
-                        st.write("No hay suficientes tweets negativos para generar una nube de palabras.")
+                    if negative_text: create_wordcloud(negative_text, "Tweets Negativos")
+                    else: st.write("No hay suficientes datos.")
                 
-                # --- Muestra de Tweets ---
                 st.header("Muestra de Tweets Analizados")
                 st.dataframe(tweets_df[['Username', 'Text', 'Sentiment', 'URL']], use_container_width=True)
 
         except Exception as e:
-            st.error(f"Ocurrió un error durante la recopilación o el análisis de datos: {e}")
-            # --- CAMBIO: Añadimos un mensaje de ayuda específico para el error común ---
-            if "empty sequence" in str(e).lower():
-                st.warning(
-                    "**Explicación:** Este error específico usualmente significa que la librería de scraping (`ntscraper`) "
-                    "no pudo encontrar un servidor público de Nitter que funcione en este momento. "
-                    "Esto es algo temporal y fuera del control de la aplicación."
-                )
-                st.info("**¿Qué puedes hacer?** Por favor, espera unos minutos y vuelve a intentarlo.")
-            else:
-                st.warning(
-                    "La plataforma X (Twitter) cambia frecuentemente sus sistemas. "
-                    "Si el problema persiste, la herramienta puede requerir mantenimiento."
-                )
+            st.error(f"Ocurrió un error durante la recopilación de datos: {e}")
+            st.warning(
+                "El scraping directo de X (Twitter) es inestable porque la plataforma implementa activamente medidas anti-bots. "
+                "Si este error persiste, puede que X haya bloqueado temporalmente el acceso desde el servidor de la aplicación. "
+                "Por favor, inténtalo de nuevo más tarde."
+            )
 
