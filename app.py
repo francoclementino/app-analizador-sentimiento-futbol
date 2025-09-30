@@ -26,8 +26,8 @@ sentiment_analyzer = load_sentiment_analyzer()
 def clean_text(text):
     """Limpia el texto de los tweets para el análisis y la nube de palabras."""
     text = re.sub(r"http\S+", "", text)  # Elimina URLs
-    text = re.sub(r"@[A-Za-z0-9]+", "", text)  # Elimina menciones
-    text = re.sub(r"#[A-Za-z0-9]+", "", text)  # Elimina hashtags
+    text = re.sub(r"@[A-za-z0-9]+", "", text)  # Elimina menciones
+    text = re.sub(r"#[A-za-z0-9]+", "", text)  # Elimina hashtags
     text = re.sub(r"\n", " ", text)  # Elimina saltos de línea
     text = re.sub(r"\s+", " ", text).strip()  # Elimina espacios extra
     return text.lower()
@@ -124,7 +124,8 @@ if submit_button:
         try:
             # --- CAMBIO: Lógica de scraping actualizada ---
             with st.spinner(f"Recopilando hasta {max_tweets} tweets... Este proceso puede tardar unos minutos."):
-                scraper = Nitter()
+                # --- CAMBIO: Hacemos el scraper más "paciente" aumentando el timeout ---
+                scraper = Nitter(timeout=20)
                 # La nueva librería busca en un único llamado
                 results = scraper.get_tweets(
                     terms=search_terms,
@@ -192,7 +193,7 @@ if submit_button:
                     if negative_text:
                         create_wordcloud(negative_text, "Tweets Negativos")
                     else:
-                        st.write("No hay suficientes tweets positivos para generar una nube de palabras.")
+                        st.write("No hay suficientes tweets negativos para generar una nube de palabras.")
                 
                 # --- Muestra de Tweets ---
                 st.header("Muestra de Tweets Analizados")
@@ -213,3 +214,4 @@ if submit_button:
                     "La plataforma X (Twitter) cambia frecuentemente sus sistemas. "
                     "Si el problema persiste, la herramienta puede requerir mantenimiento."
                 )
+
