@@ -1,14 +1,37 @@
 import streamlit as st
 import pandas as pd
-# --- CAMBIO: Volvemos a snscrape, la librería de scraping directo ---
-import snscrape.modules.twitter as sntwitter
 from pysentimiento import create_analyzer
 from wordcloud import WordCloud
 import matplotlib.pyplot as plt
 import re
 from datetime import date, timedelta, datetime
 
-# --- Configuración de la Página y Analizador de Sentimiento ---
+# --- Detección de Incompatibilidad de la Librería de Scraping ---
+# Este es el punto crítico. Intentamos importar la librería y, si falla
+# con el error conocido, detenemos la app y mostramos una explicación.
+
+try:
+    import snscrape.modules.twitter as sntwitter
+except AttributeError:
+    st.set_page_config(layout="wide", page_title="Error de Compatibilidad")
+    st.title("⚽ Analizador de Sentimiento de Futbolistas")
+    st.error(
+        "**Error Crítico de Compatibilidad Detectado**\n\n"
+        "La librería de web scraping (`snscrape`) no es compatible con el entorno del servidor "
+        "en el que se ejecuta esta aplicación (versión de Python demasiado moderna).\n\n"
+        "**Este es un hallazgo clave de la prueba de concepto:** Confirma que depender de "
+        "librerías de scraping gratuitas y no mantenidas activamente presenta un riesgo técnico "
+        "importante, tal como se predijo en el informe de viabilidad inicial."
+    )
+    st.warning(
+        "**Conclusión de la Prueba:** Para que un proyecto como este sea viable a largo plazo, "
+        "se requeriría invertir en el desarrollo de una herramienta de scraping personalizada y con "
+        "mantenimiento continuo, o encontrar una solución de datos comercial."
+    )
+    # Detenemos la ejecución de la aplicación aquí.
+    st.stop()
+
+# --- El resto de la aplicación (solo se ejecuta si la importación tuvo éxito) ---
 
 st.set_page_config(layout="wide", page_title="Análisis de Sentimiento de Futbolistas")
 
@@ -63,13 +86,11 @@ def create_wordcloud(text, title):
     ax.set_axis_off()
     st.pyplot(fig)
 
-# --- CAMBIO: La función para construir la query es ahora más compleja ---
 def build_snscrape_query(player_name, team_name, start_date, end_date):
     """Construye la cadena de búsqueda para snscrape."""
     terms = []
     name_parts = player_name.strip().split()
     
-    # Crea combinaciones del nombre y el equipo
     if player_name:
         terms.append(f'"{player_name}"')
     if team_name and len(name_parts) > 0:
@@ -77,10 +98,7 @@ def build_snscrape_query(player_name, team_name, start_date, end_date):
         if len(name_parts) > 1:
             terms.append(f'("{name_parts[-1]}" AND "{team_name}")')
 
-    # Une los términos con OR para que busque cualquiera de las combinaciones
     query_terms = " OR ".join(terms)
-    
-    # Añade el rango de fechas
     query = f"({query_terms}) since:{start_date.strftime('%Y-%m-%d')} until:{end_date.strftime('%Y-%m-%d')}"
     return query
 
@@ -121,7 +139,6 @@ if submit_button:
         
         try:
             with st.spinner(f"Recopilando hasta {max_tweets} tweets... Este proceso puede ser más lento y depende de la disponibilidad de X."):
-                # --- CAMBIO: Nueva lógica de scraping con snscrape ---
                 scraper = sntwitter.TwitterSearchScraper(query)
                 for i, tweet in enumerate(scraper.get_items()):
                     if i >= max_tweets:
@@ -140,7 +157,6 @@ if submit_button:
                 tweets_df = pd.DataFrame(tweets_list, columns=['Datetime', 'Tweet Id', 'Text', 'Username', 'URL'])
                 st.success(f"¡Recopilación completada! Se encontraron {len(tweets_df)} tweets.")
 
-                # El resto del código de análisis y visualización permanece igual
                 with st.spinner("Analizando el sentimiento de los tweets..."):
                     tweets_df['Clean Text'] = tweets_df['Text'].apply(clean_text)
                     sentiments = sentiment_analyzer.predict(tweets_df['Clean Text'].tolist())
