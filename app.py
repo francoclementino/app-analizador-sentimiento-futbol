@@ -7,6 +7,7 @@ import re
 from datetime import date, timedelta
 import asyncio
 from twscrape import API, gather
+import os
 
 # Configuración de la página
 st.set_page_config(layout="wide", page_title="Análisis de Sentimiento de Futbolistas")
@@ -14,9 +15,7 @@ st.set_page_config(layout="wide", page_title="Análisis de Sentimiento de Futbol
 # --- FUNCIÓN PARA INICIALIZAR CUENTAS DE TWITTER ---
 async def initialize_twitter_accounts():
     """Inicializa las cuentas de Twitter desde los secretos de Streamlit."""
-    import os
-    
-    # Crear directorio para la base de datos si no existe
+    # Usar directorio temporal para la base de datos
     db_path = "/tmp/accounts.db"
     api = API(db_path)
     
@@ -34,7 +33,7 @@ async def initialize_twitter_accounts():
         password = st.secrets["twitter"]["password"]
         email = st.secrets["twitter"]["email"]
         
-        # Agregar cuenta (sin email_password)
+        # Agregar cuenta (sin email_password para empezar)
         await api.pool.add_account(username, password, email, "")
         
         # Hacer login
@@ -44,12 +43,17 @@ async def initialize_twitter_accounts():
         return api
         
     except KeyError as e:
-        st.error(f"⚠️ Falta configurar: {e}")
-        st.info("Verifica que hayas configurado username, password y email en Settings > Secrets")
+        st.error(f"⚠️ Falta configurar en los secretos: {e}")
+        st.info("Verifica Settings > Secrets en Streamlit Cloud")
         return None
     except Exception as e:
-        st.error(f"❌ Error al configurar Twitter: {str(e)}")
-        st.info("Posibles causas:\n- Credenciales incorrectas\n- Twitter bloqueó el login\n- Se requiere verificación por email")
+        st.error(f"❌ Error al conectar con Twitter: {str(e)}")
+        st.info("""
+        **Posibles soluciones:**
+        - Verifica que el username NO tenga @ (ejemplo: Futbol_Data_ no @Futbol_Data_)
+        - Verifica que password y email sean correctos
+        - Si Twitter pide verificación, necesitarás agregar 'email_password' en los secretos
+        """)
         return None
 
 @st.cache_resource
@@ -221,9 +225,9 @@ if submit_button:
             st.error(f"Ocurrió un error durante la recopilación de datos: {e}")
             st.warning("""
             **Posibles causas:**
-            - Las credenciales de Twitter no están configuradas correctamente en Streamlit Cloud
+            - Las credenciales de Twitter no están configuradas correctamente
             - La cuenta alcanzó el límite de rate (espera 15 minutos)
-            - Problemas de conexión con Twitter
+            - Twitter requiere verificación adicional
             
-            **Solución:** Verifica que hayas configurado los secretos correctamente en Settings > Secrets
+            **Solución:** Verifica los secretos en Settings > Secrets
             """)
