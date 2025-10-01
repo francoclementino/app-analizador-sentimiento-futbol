@@ -7,7 +7,7 @@ import re
 from datetime import date, timedelta
 import asyncio
 from twscrape import API, gather
-import os
+import json
 
 # Configuración de la página
 st.set_page_config(layout="wide", page_title="Análisis de Sentimiento de Futbolistas")
@@ -23,9 +23,10 @@ async def initialize_twitter_accounts():
     try:
         accounts = await api.pool.accounts_info()
         if len(accounts) > 0:
-            return api  # Ya están configuradas
+            st.info("✅ Usando cuenta de Twitter ya configurada")
+            return api
     except:
-        pass  # Primera vez, continuar con la configuración
+        pass
     
     # Configurar desde secrets
     try:
@@ -33,27 +34,43 @@ async def initialize_twitter_accounts():
         password = st.secrets["twitter"]["password"]
         email = st.secrets["twitter"]["email"]
         
-        # Agregar cuenta (sin email_password para empezar)
-        await api.pool.add_account(username, password, email, "")
-        
-        # Hacer login
-        await api.pool.login_all()
-        
-        st.success("✅ Cuenta de Twitter configurada correctamente")
-        return api
+        # Usar cookies (método más confiable)
+        if "cookies" in st.secrets["twitter"]:
+            cookies_raw = st.secrets["twitter"]["cookies"]
+            
+            # Parsear cookies desde JSON
+            try:
+                cookies_list = json.loads(cookies_raw)
+                
+                # Convertir lista de cookies al formato que espera twscrape
+                cookies_dict = {}
+                for cookie in cookies_list:
+                    cookies_dict[cookie['name']] = cookie['value']
+                
+                # Convertir a string JSON
+                cookies_str = json.dumps(cookies_dict)
+                
+                # Agregar cuenta con cookies
+                await api.pool.add_account(username, password, email, "", cookies=cookies_str)
+                st.success("✅ Cuenta configurada con cookies")
+                return api
+                
+            except json.JSONDecodeError as e:
+                st.error(f"Error al parsear cookies: {e}")
+                return None
+            except Exception as e:
+                st.error(f"Error al configurar cookies: {e}")
+                return None
+        else:
+            st.error("No se encontraron cookies en los secretos")
+            return None
         
     except KeyError as e:
         st.error(f"⚠️ Falta configurar en los secretos: {e}")
-        st.info("Verifica Settings > Secrets en Streamlit Cloud")
         return None
     except Exception as e:
         st.error(f"❌ Error al conectar con Twitter: {str(e)}")
-        st.info("""
-        **Posibles soluciones:**
-        - Verifica que el username NO tenga @ (ejemplo: Futbol_Data_ no @Futbol_Data_)
-        - Verifica que password y email sean correctos
-        - Si Twitter pide verificación, necesitarás agregar 'email_password' en los secretos
-        """)
+        st.info("Verifica que las cookies estén correctamente configuradas")
         return None
 
 @st.cache_resource
@@ -152,8 +169,8 @@ with st.form("analysis_form"):
     st.subheader("Parámetros de Búsqueda")
     col1, col2 = st.columns(2)
     with col1:
-        player_name = st.text_input("Nombre del Jugador", "Ever Banega", help="Introduce el nombre completo para mejores resultados.")
-        team_name = st.text_input("Equipo (Opcional)", "Newells Old Boys", help="Añadir el equipo ayuda a dar contexto y filtrar resultados irrelevantes.")
+        player_name = st.text_input("Nombre del Jugador", "Lionel Messi", help="Introduce el nombre completo para mejores resultados.")
+        team_name = st.text_input("Equipo (Opcional)", "", help="Añadir el equipo ayuda a dar contexto y filtrar resultados irrelevantes.")
     with col2:
         today = date.today()
         default_start_date = today - timedelta(days=7)
@@ -173,7 +190,7 @@ if submit_button:
         st.info(f"🔍 Buscando tweets sobre **{player_name}** {f'({team_name})' if team_name else ''}")
         
         try:
-            with st.spinner(f"Recopilando hasta {max_tweets} tweets... Este proceso puede tardar un momento."):
+            with st.spinner(f"Recopilando hasta {max_tweets} tweets... Esto puede tardar 1-2 minutos."):
                 tweets_list = scrape_tweets(player_name, team_name, start_date, end_date, max_tweets)
             
             if not tweets_list:
@@ -225,9 +242,7 @@ if submit_button:
             st.error(f"Ocurrió un error durante la recopilación de datos: {e}")
             st.warning("""
             **Posibles causas:**
-            - Las credenciales de Twitter no están configuradas correctamente
-            - La cuenta alcanzó el límite de rate (espera 15 minutos)
-            - Twitter requiere verificación adicional
-            
-            **Solución:** Verifica los secretos en Settings > Secrets
+            - Las cookies pueden haber expirado (vuelve a exportarlas desde tu navegador)
+            - Twitter está bloqueando temporalmente el acceso
+            - Problemas de conectividad
             """)
