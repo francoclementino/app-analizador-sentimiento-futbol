@@ -1,248 +1,350 @@
-import streamlit as st
-import pandas as pd
-from pysentimiento import create_analyzer
-from wordcloud import WordCloud
-import matplotlib.pyplot as plt
-import re
-from datetime import date, timedelta
 import asyncio
-from twscrape import API, gather
-import json
+from twikit import Client
+from datetime import datetime, timedelta
+import pandas as pd
+import streamlit as st
+from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+import time
 
-# Configuración de la página
-st.set_page_config(layout="wide", page_title="Análisis de Sentimiento de Futbolistas")
-
-# --- FUNCIÓN PARA INICIALIZAR CUENTAS DE TWITTER ---
-async def initialize_twitter_accounts():
-    """Inicializa las cuentas de Twitter desde los secretos de Streamlit."""
-    # Usar directorio temporal para la base de datos
-    db_path = "/tmp/accounts.db"
-    api = API(db_path)
+class TwitterScraper:
+    def __init__(self):
+        self.client = Client('es-ES')  # Idioma español
+        self.logged_in = False
     
-    # Verificar si ya hay cuentas configuradas
-    try:
-        accounts = await api.pool.accounts_info()
-        if len(accounts) > 0:
-            st.info("✅ Usando cuenta de Twitter ya configurada")
-            return api
-    except:
-        pass
+    async def login(self, username, email, password):
+        """Login con credenciales de Twitter"""
+        try:
+            await self.client.login(
+                auth_info_1=username,
+                auth_info_2=email,
+                password=password
+            )
+            # Guardar cookies para reutilizar
+            self.client.save_cookies('twitter_cookies.json')
+            self.logged_in = True
+            print("✅ Login exitoso")
+        except Exception as e:
+            print(f"❌ Error en login: {e}")
+            raise
     
-    # Configurar desde secrets
-    try:
-        username = st.secrets["twitter"]["username"]
-        password = st.secrets["twitter"]["password"]
-        email = st.secrets["twitter"]["email"]
+    async def login_with_cookies(self, cookies_file='twitter_cookies.json'):
+        """Login rápido usando cookies guardadas"""
+        try:
+            self.client.load_cookies(cookies_file)
+            self.logged_in = True
+            print("✅ Login con cookies exitoso")
+        except Exception as e:
+            print(f"⚠️ No se pudieron cargar cookies: {e}")
+            return False
+        return True
+    
+    async def search_player_tweets(self, player_name, team_name=None, 
+                                   days_back=7, max_tweets=100):
+        """
+        Busca tweets sobre un jugador de fútbol
         
-        # Usar cookies (método más confiable)
-        if "cookies" in st.secrets["twitter"]:
-            cookies_raw = st.secrets["twitter"]["cookies"]
-            
-            # Parsear cookies desde JSON
-            try:
-                cookies_list = json.loads(cookies_raw)
-                
-                # Convertir lista de cookies al formato que espera twscrape
-                cookies_dict = {}
-                for cookie in cookies_list:
-                    cookies_dict[cookie['name']] = cookie['value']
-                
-                # Convertir a string JSON
-                cookies_str = json.dumps(cookies_dict)
-                
-                # Agregar cuenta con cookies
-                await api.pool.add_account(username, password, email, "", cookies=cookies_str)
-                st.success("✅ Cuenta configurada con cookies")
-                return api
-                
-            except json.JSONDecodeError as e:
-                st.error(f"Error al parsear cookies: {e}")
-                return None
-            except Exception as e:
-                st.error(f"Error al configurar cookies: {e}")
-                return None
+        Args:
+            player_name: Nombre del jugador (ej: "Lionel Messi", "gallo")
+            team_name: Equipo opcional (ej: "All Boys")
+            days_back: Días hacia atrás para buscar
+            max_tweets: Máximo de tweets a retornar
+        """
+        if not self.logged_in:
+            raise Exception("Debes hacer login primero")
+        
+        # Construir query
+        if team_name:
+            query = f'"{player_name}" "{team_name}" lang:es -filter:retweets'
         else:
-            st.error("No se encontraron cookies en los secretos")
-            return None
+            query = f'"{player_name}" (gol OR asistencia OR partido) lang:es -filter:retweets'
         
-    except KeyError as e:
-        st.error(f"⚠️ Falta configurar en los secretos: {e}")
-        return None
-    except Exception as e:
-        st.error(f"❌ Error al conectar con Twitter: {str(e)}")
-        st.info("Verifica que las cookies estén correctamente configuradas")
-        return None
-
-@st.cache_resource
-def load_sentiment_analyzer():
-    """Carga y cachea el modelo de análisis de sentimiento."""
-    return create_analyzer(task="sentiment", lang="es")
-
-sentiment_analyzer = load_sentiment_analyzer()
-
-# --- Funciones Auxiliares ---
-
-def clean_text(text):
-    """Limpia el texto de los tweets para el análisis y la nube de palabras."""
-    text = re.sub(r"http\S+", "", text)
-    text = re.sub(r"@[A-Za-z0-9]+", "", text)
-    text = re.sub(r"#[A-Za-z0-9]+", "", text)
-    text = re.sub(r"\n", " ", text)
-    text = re.sub(r"\s+", " ", text).strip()
-    return text.lower()
-
-def get_sentiment_label(prediction):
-    """Convierte la predicción del modelo en una etiqueta simple."""
-    output = prediction.output
-    if output == "POS":
-        return "Positivo"
-    elif output == "NEG":
-        return "Negativo"
-    else:
-        return "Neutral"
-
-def create_wordcloud(text, title):
-    """Genera y muestra una nube de palabras."""
-    stopwords_es = set([
-        'de', 'la', 'que', 'el', 'en', 'y', 'a', 'los', 'del', 'se', 'no', 'con', 'un', 'una', 'su',
-        'para', 'es', 'por', 'lo', 'las', 'como', 'más', 'pero', 'sus', 'le', 'al', 'si', 'ya',
-        'me', 'ha', 'mi', 'o', 'este', 'yo', 'qué', 'cuando', 'muy', 'sin', 'sobre', 'ser', 'son',
-        'fue', 'hay', 'era', 'está', 'porque', 'todo', 'le', 'ese', 'así', 'hace', 'tiene', 'también'
-    ])
-    
-    wordcloud = WordCloud(
-        width=800,
-        height=400,
-        background_color='white',
-        stopwords=stopwords_es,
-        colormap='viridis',
-        min_font_size=10
-    ).generate(text)
-    
-    fig, ax = plt.subplots(figsize=(10, 5))
-    ax.imshow(wordcloud, interpolation='bilinear')
-    ax.set_axis_off()
-    st.pyplot(fig)
-
-async def scrape_tweets_async(player_name, team_name, start_date, end_date, max_tweets):
-    """Función asíncrona para scrapear tweets usando twscrape."""
-    # Inicializar API con cuentas
-    api = await initialize_twitter_accounts()
-    if api is None:
-        return []
-    
-    # Construir query de búsqueda
-    query_parts = [f'"{player_name}"']
-    if team_name:
-        query_parts.append(f'"{team_name}"')
-    
-    query = f'{" ".join(query_parts)} since:{start_date.strftime("%Y-%m-%d")} until:{end_date.strftime("%Y-%m-%d")}'
-    
-    tweets_list = []
-    try:
-        async for tweet in api.search(query, limit=max_tweets):
-            tweets_list.append({
-                'Datetime': tweet.date,
-                'Tweet Id': tweet.id,
-                'Text': tweet.rawContent,
-                'Username': tweet.user.username,
-                'URL': tweet.url
-            })
-    except Exception as e:
-        st.error(f"Error durante el scraping: {e}")
-    
-    return tweets_list
-
-def scrape_tweets(player_name, team_name, start_date, end_date, max_tweets):
-    """Wrapper sincrónico para usar en Streamlit."""
-    return asyncio.run(scrape_tweets_async(player_name, team_name, start_date, end_date, max_tweets))
-
-# --- Interfaz de Usuario (Streamlit) ---
-
-st.title("⚽ Analizador de Sentimiento de Futbolistas en X (Twitter)")
-st.markdown("""
-Esta herramienta utiliza **twscrape** (2025), una librería activamente mantenida que permite 
-realizar análisis de sentimiento en tiempo real de tweets sobre futbolistas.
-""")
-
-with st.form("analysis_form"):
-    st.subheader("Parámetros de Búsqueda")
-    col1, col2 = st.columns(2)
-    with col1:
-        player_name = st.text_input("Nombre del Jugador", "Lionel Messi", help="Introduce el nombre completo para mejores resultados.")
-        team_name = st.text_input("Equipo (Opcional)", "", help="Añadir el equipo ayuda a dar contexto y filtrar resultados irrelevantes.")
-    with col2:
-        today = date.today()
-        default_start_date = today - timedelta(days=7)
-        date_range = st.date_input("Rango de Fechas", (default_start_date, today), max_value=today)
-        max_tweets = st.number_input("Cantidad Máxima de Tweets", min_value=50, max_value=500, value=100, step=50)
-
-    submit_button = st.form_submit_button("📊 Iniciar Análisis")
-
-# --- Lógica de Análisis y Visualización ---
-
-if submit_button:
-    if not player_name:
-        st.error("Por favor, introduce el nombre de un jugador.")
-    else:
-        start_date, end_date = date_range
+        print(f"🔍 Buscando: {query}")
         
-        st.info(f"🔍 Buscando tweets sobre **{player_name}** {f'({team_name})' if team_name else ''}")
+        tweets_data = []
+        try:
+            # Búsqueda con twikit
+            tweets = await self.client.search_tweet(query, 'Latest')
+            
+            for tweet in tweets:
+                # Limit de tweets
+                if len(tweets_data) >= max_tweets:
+                    break
+                
+                # Filtrar por fecha si es necesario
+                tweet_date = datetime.strptime(
+                    tweet.created_at, 
+                    '%a %b %d %H:%M:%S %z %Y'
+                )
+                if (datetime.now() - tweet_date.replace(tzinfo=None)).days > days_back:
+                    continue
+                
+                tweets_data.append({
+                    'id': tweet.id,
+                    'fecha': tweet.created_at,
+                    'usuario': tweet.user.name,
+                    'username': tweet.user.screen_name,
+                    'contenido': tweet.text,
+                    'likes': tweet.favorite_count,
+                    'retweets': tweet.retweet_count,
+                    'replies': tweet.reply_count,
+                    'url': f"https://twitter.com/{tweet.user.screen_name}/status/{tweet.id}"
+                })
+                
+                # Delay para evitar rate limits
+                await asyncio.sleep(1)
+            
+            print(f"✅ Encontrados {len(tweets_data)} tweets")
+            return tweets_data
+            
+        except Exception as e:
+            print(f"❌ Error en búsqueda: {e}")
+            return []
+    
+    async def get_user_tweets(self, username, max_tweets=100):
+        """
+        Alternativa más confiable: obtener tweets directamente del usuario
+        Úsalo cuando conozcas la cuenta oficial del jugador/club
+        """
+        if not self.logged_in:
+            raise Exception("Debes hacer login primero")
         
         try:
-            with st.spinner(f"Recopilando hasta {max_tweets} tweets... Esto puede tardar 1-2 minutos."):
-                tweets_list = scrape_tweets(player_name, team_name, start_date, end_date, max_tweets)
+            user = await self.client.get_user_by_screen_name(username)
+            print(f"📱 Usuario: @{user.screen_name} - {user.name}")
+            print(f"👥 Seguidores: {user.followers_count:,}")
             
-            if not tweets_list:
-                st.warning("No se encontraron tweets para los criterios de búsqueda seleccionados. Intenta con un rango de fechas más amplio o un jugador diferente.")
-            else:
-                tweets_df = pd.DataFrame(tweets_list)
-                st.success(f"¡Recopilación completada! Se encontraron {len(tweets_df)} tweets.")
-
-                with st.spinner("Analizando el sentimiento de los tweets..."):
-                    tweets_df['Clean Text'] = tweets_df['Text'].apply(clean_text)
-                    sentiments = sentiment_analyzer.predict(tweets_df['Clean Text'].tolist())
-                    tweets_df['Sentiment'] = [get_sentiment_label(s) for s in sentiments]
-
-                st.header("Resultados del Análisis de Sentimiento")
-                sentiment_counts = tweets_df['Sentiment'].value_counts()
+            tweets = await self.client.get_user_tweets(user.id, 'Tweets')
+            
+            tweets_data = []
+            for tweet in tweets:
+                if len(tweets_data) >= max_tweets:
+                    break
                 
-                col1, col2, col3 = st.columns(3)
-                col1.metric("Tweets Positivos", sentiment_counts.get("Positivo", 0))
-                col2.metric("Tweets Negativos", sentiment_counts.get("Negativo", 0))
-                col3.metric("Tweets Neutrales", sentiment_counts.get("Neutral", 0))
+                tweets_data.append({
+                    'id': tweet.id,
+                    'fecha': tweet.created_at,
+                    'contenido': tweet.text,
+                    'likes': tweet.favorite_count,
+                    'retweets': tweet.retweet_count,
+                    'url': f"https://twitter.com/{username}/status/{tweet.id}"
+                })
                 
-                fig, ax = plt.subplots()
-                sentiment_counts.plot(kind='pie', autopct='%1.1f%%', ax=ax, colors=['#4CAF50', '#F44336', '#FFC107'])
-                ax.set_ylabel('')
-                st.pyplot(fig)
-                
-                st.header("Temas Frecuentes")
-                col_wc1, col_wc2 = st.columns(2)
-                with col_wc1:
-                    st.subheader("Palabras en Tweets Positivos")
-                    positive_text = " ".join(tweet for tweet in tweets_df[tweets_df['Sentiment'] == 'Positivo']['Clean Text'])
-                    if positive_text: 
-                        create_wordcloud(positive_text, "Tweets Positivos")
-                    else: 
-                        st.write("No hay suficientes datos.")
-                        
-                with col_wc2:
-                    st.subheader("Palabras en Tweets Negativos")
-                    negative_text = " ".join(tweet for tweet in tweets_df[tweets_df['Sentiment'] == 'Negativo']['Clean Text'])
-                    if negative_text: 
-                        create_wordcloud(negative_text, "Tweets Negativos")
-                    else: 
-                        st.write("No hay suficientes datos.")
-                
-                st.header("Muestra de Tweets Analizados")
-                st.dataframe(tweets_df[['Username', 'Text', 'Sentiment', 'URL']], use_container_width=True)
-
+                await asyncio.sleep(1)
+            
+            return tweets_data
+            
         except Exception as e:
-            st.error(f"Ocurrió un error durante la recopilación de datos: {e}")
-            st.warning("""
-            **Posibles causas:**
-            - Las cookies pueden haber expirado (vuelve a exportarlas desde tu navegador)
-            - Twitter está bloqueando temporalmente el acceso
-            - Problemas de conectividad
+            print(f"❌ Error obteniendo tweets de usuario: {e}")
+            return []
+
+class SentimentAnalyzer:
+    """Análisis de sentimiento básico"""
+    def __init__(self):
+        # VADER funciona decentemente con español si se adapta
+        self.analyzer = SentimentIntensityAnalyzer()
+        
+        # Palabras clave positivas en español (fútbol)
+        self.positive_keywords = [
+            'gol', 'golazo', 'crack', 'genio', 'figura', 'estrella',
+            'excelente', 'brillante', 'increíble', 'partidazo', 'asistencia',
+            'talento', 'magia', 'fenómeno', 'bestia', 'máquina'
+        ]
+        
+        # Palabras clave negativas
+        self.negative_keywords = [
+            'mal', 'pésimo', 'desastre', 'horrible', 'nefasto', 'perdió',
+            'error', 'fallo', 'expulsado', 'lesión', 'lesionado', 'banco',
+            'suplente', 'fracaso'
+        ]
+    
+    def analyze_spanish(self, text):
+        """Análisis básico adaptado para español"""
+        text_lower = text.lower()
+        
+        # Contar palabras positivas y negativas
+        pos_count = sum(1 for word in self.positive_keywords if word in text_lower)
+        neg_count = sum(1 for word in self.negative_keywords if word in text_lower)
+        
+        # Análisis VADER como base
+        vader_scores = self.analyzer.polarity_scores(text)
+        
+        # Ajustar con keywords en español
+        if pos_count > neg_count:
+            sentiment = 'positivo'
+            score = min(0.8 + (pos_count * 0.1), 1.0)
+        elif neg_count > pos_count:
+            sentiment = 'negativo'
+            score = max(-0.8 - (neg_count * 0.1), -1.0)
+        else:
+            # Usar VADER por defecto
+            if vader_scores['compound'] >= 0.05:
+                sentiment = 'positivo'
+                score = vader_scores['compound']
+            elif vader_scores['compound'] <= -0.05:
+                sentiment = 'negativo'
+                score = vader_scores['compound']
+            else:
+                sentiment = 'neutral'
+                score = vader_scores['compound']
+        
+        return {
+            'sentiment': sentiment,
+            'score': score,
+            'pos_words': pos_count,
+            'neg_words': neg_count
+        }
+
+# STREAMLIT APP COMPLETA
+def main():
+    st.set_page_config(
+        page_title="Análisis de Sentimiento - Jugadores de Fútbol",
+        page_icon="⚽",
+        layout="wide"
+    )
+    
+    st.title("⚽ Análisis de Sentimiento de Jugadores de Fútbol")
+    st.markdown("*Análisis de tweets en español sobre jugadores sudamericanos*")
+    
+    # Sidebar para configuración
+    with st.sidebar:
+        st.header("⚙️ Configuración")
+        
+        # Credenciales (usar st.secrets en producción)
+        st.subheader("Credenciales Twitter")
+        username = st.text_input("Username", value=st.secrets.get("TWITTER_USERNAME", ""))
+        email = st.text_input("Email", value=st.secrets.get("TWITTER_EMAIL", ""))
+        password = st.text_input("Password", type="password", 
+                                value=st.secrets.get("TWITTER_PASSWORD", ""))
+        
+        # Parámetros de búsqueda
+        st.subheader("Parámetros")
+        days_back = st.slider("Días hacia atrás", 1, 30, 7)
+        max_tweets = st.slider("Máximo de tweets", 10, 200, 50)
+    
+    # Input de búsqueda
+    col1, col2 = st.columns(2)
+    with col1:
+        player_name = st.text_input("Nombre del jugador", 
+                                    placeholder="Ej: Lionel Messi, gallo, Enzo Fernández")
+    with col2:
+        team_name = st.text_input("Equipo (opcional)", 
+                                  placeholder="Ej: All Boys, River Plate")
+    
+    # Botón de búsqueda
+    if st.button("🔍 Buscar y Analizar", type="primary"):
+        if not player_name:
+            st.error("Por favor ingresa el nombre de un jugador")
+            return
+        
+        if not (username and email and password):
+            st.error("Por favor configura las credenciales de Twitter en la sidebar")
+            return
+        
+        # Inicializar scraper
+        scraper = TwitterScraper()
+        sentiment_analyzer = SentimentAnalyzer()
+        
+        with st.spinner("Iniciando sesión en Twitter..."):
+            try:
+                # Intentar login con cookies primero
+                success = asyncio.run(scraper.login_with_cookies())
+                
+                if not success:
+                    # Login normal si no hay cookies
+                    asyncio.run(scraper.login(username, email, password))
+                
+            except Exception as e:
+                st.error(f"Error en login: {e}")
+                return
+        
+        with st.spinner(f"Buscando tweets sobre {player_name}..."):
+            tweets = asyncio.run(
+                scraper.search_player_tweets(
+                    player_name, 
+                    team_name, 
+                    days_back, 
+                    max_tweets
+                )
+            )
+        
+        if not tweets:
+            st.warning(f"No se encontraron tweets para '{player_name}' en los últimos {days_back} días")
+            st.info("""
+            **Posibles razones:**
+            - El jugador/equipo no es muy mencionado en Twitter
+            - La búsqueda es muy específica
+            - Twitter no tiene estos tweets indexados
+            
+            **Prueba:**
+            - Usar solo el apellido del jugador
+            - Buscar sin equipo
+            - Aumentar los días hacia atrás
+            - Usar la cuenta oficial del jugador (función "Buscar por Usuario")
             """)
+            return
+        
+        # Análisis de sentimiento
+        with st.spinner("Analizando sentimiento..."):
+            for tweet in tweets:
+                analysis = sentiment_analyzer.analyze_spanish(tweet['contenido'])
+                tweet.update(analysis)
+        
+        # Crear DataFrame
+        df = pd.DataFrame(tweets)
+        
+        # Métricas generales
+        st.header("📊 Resumen")
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.metric("Total Tweets", len(df))
+        with col2:
+            positivos = len(df[df['sentiment'] == 'positivo'])
+            st.metric("Sentimiento Positivo", f"{positivos} ({positivos/len(df)*100:.1f}%)")
+        with col3:
+            negativos = len(df[df['sentiment'] == 'negativo'])
+            st.metric("Sentimiento Negativo", f"{negativos} ({negativos/len(df)*100:.1f}%)")
+        with col4:
+            promedio_score = df['score'].mean()
+            st.metric("Score Promedio", f"{promedio_score:.2f}")
+        
+        # Distribución de sentimiento
+        st.subheader("Distribución de Sentimiento")
+        sentiment_counts = df['sentiment'].value_counts()
+        st.bar_chart(sentiment_counts)
+        
+        # Tweets más relevantes
+        st.subheader("🔥 Tweets Más Populares")
+        df_sorted = df.sort_values('likes', ascending=False)
+        
+        for idx, tweet in df_sorted.head(10).iterrows():
+            sentiment_emoji = {
+                'positivo': '😊',
+                'negativo': '😠',
+                'neutral': '😐'
+            }
+            
+            with st.expander(f"{sentiment_emoji[tweet['sentiment']]} @{tweet['username']} - {tweet['likes']} ❤️"):
+                st.write(tweet['contenido'])
+                st.caption(f"📅 {tweet['fecha']} | 🔁 {tweet['retweets']} RT | 💬 {tweet['replies']} replies")
+                st.caption(f"Score: {tweet['score']:.2f}")
+                st.markdown(f"[Ver en Twitter]({tweet['url']})")
+        
+        # Tabla completa
+        st.subheader("📋 Todos los Tweets")
+        st.dataframe(
+            df[['fecha', 'username', 'contenido', 'sentiment', 'score', 'likes', 'retweets']],
+            use_container_width=True
+        )
+        
+        # Descarga CSV
+        csv = df.to_csv(index=False).encode('utf-8')
+        st.download_button(
+            label="📥 Descargar datos (CSV)",
+            data=csv,
+            file_name=f"sentiment_{player_name}_{datetime.now().strftime('%Y%m%d')}.csv",
+            mime="text/csv"
+        )
+
+if __name__ == "__main__":
+    main()
